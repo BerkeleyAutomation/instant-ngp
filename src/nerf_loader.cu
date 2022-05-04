@@ -139,14 +139,14 @@ bool ends_with(const std::string& str, const std::string& suffix) {
 	return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
 }
 
-NerfDataset create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, int aabb_scale, bool is_hdr) {
+NerfDataset create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, float nerf_scale, int aabb_scale, bool is_hdr) {
 	NerfDataset result{};
 	result.n_images = n_images;
 	result.sharpness_resolution = { 128, 72 };
 	result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
 	result.xforms.resize(n_images);
 	result.metadata.resize(n_images);
-	result.scale = NERF_SCALE;
+	result.scale = nerf_scale;
 	result.offset = {0.5f, 0.5f, 0.5f};
 	result.image_resolution = image_resolution;
 	result.aabb_scale = aabb_scale;
@@ -720,5 +720,26 @@ void NerfDataset::set_training_image(int frame_idx, const float* pixels) {
 	compute_sharpness<<<blocks, threads, 0, nullptr>>>(sharpness_resolution, image_resolution, 1, images_data.data() + img_size * (size_t)frame_idx, sharpness_data.data() + sharpness_resolution.x() * sharpness_resolution.y() * (size_t)frame_idx);
 }
 
+void NerfDataset::set_training_image_uint(int frame_idx, const uint8_t* pixels){
+	/*
+		this function is the same as set_training_image except 'pixels' is assumed to be RGBA in uint8
+		before conversion to linear color space 
+	*/
+	if (frame_idx < 0 || frame_idx >= n_images) {
+		throw std::runtime_error{"NerfDataset::set_training_image: invalid frame index"};
+	}
+	GPUMemory<uint8_t> images_data_gpu_tmp;
+	size_t n_pixels = image_resolution.prod();
+	size_t img_size = n_pixels * 4;
+	images_data_gpu_tmp.resize(img_size);
+	images_data_gpu_tmp.copy_from_host(pixels);
+	linear_kernel(from_rgba32<__half>, 0, nullptr, n_pixels,
+			(uint8_t*)images_data_gpu_tmp.data(), images_data.data() + img_size * (size_t)frame_idx,
+			false, false, 0);
+	const dim3 threads = { 16, 8, 1 };
+	const dim3 blocks = { div_round_up((uint32_t)sharpness_resolution.x(), threads.x), div_round_up((uint32_t)sharpness_resolution.y(), threads.y), div_round_up((uint32_t)n_images, threads.z) };
+	sharpness_data.enlarge(sharpness_resolution.x() * sharpness_resolution.y());
+	compute_sharpness<<<blocks, threads, 0, nullptr>>>(sharpness_resolution, image_resolution, 1, images_data.data() + img_size * (size_t)frame_idx, sharpness_data.data() + sharpness_resolution.x() * sharpness_resolution.y() * (size_t)frame_idx);
+}
 
 NGP_NAMESPACE_END

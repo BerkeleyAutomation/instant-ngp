@@ -32,7 +32,6 @@
 
 #include <filesystem/directory.h>
 #include <filesystem/path.h>
-
 #ifdef copysign
 #undef copysign
 #endif
@@ -369,9 +368,12 @@ __global__ void mark_untrained_density_grid(const uint32_t n_elements,  float* _
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
+	//which resolution of the hashgrids we're on
 	uint32_t level = i / (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
+	//integer coordinates of the voxel before the space-filling morton curve is applied
 	uint32_t pos_idx = i % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
 
+	//integer coordinates in the grid of the current index pos_idx
 	uint32_t x = tcnn::morton3D_invert(pos_idx>>0);
 	uint32_t y = tcnn::morton3D_invert(pos_idx>>1);
 	uint32_t z = tcnn::morton3D_invert(pos_idx>>2);
@@ -379,10 +381,17 @@ __global__ void mark_untrained_density_grid(const uint32_t n_elements,  float* _
 	float half_resx=resolution.x()*0.5f;
 	float half_resy=resolution.y()*0.5f;
 
+	//
+	//((x+.5, y+.5, z+.5)/128-(.5, .5, .5))   *2^L    + (.5, .5, .5)
+	//^^scales from -.5 to .5, then raises to L power
+	//if the resolution of the Lth level is NxNxN voxels, then x \in [-N/2,N/2]
+
+	//position at level L in the voxel grid (cartesian coords)
 	Vector3f pos = ((Vector3f{(float)x+0.5f, (float)y+0.5f, (float)z+0.5f}) / NERF_GRIDSIZE() - Vector3f::Constant(0.5f)) * scalbnf(1.0f, level) + Vector3f::Constant(0.5f);
 	float voxel_radius = 0.5f*SQRT3()*scalbnf(1.0f, level) / NERF_GRIDSIZE();
 	int count=0;
 	for (uint32_t j=0; j < n_training_images; ++j) {
+		//iterate through all images
 		if (metadata[j].camera_distortion.mode == ECameraDistortionMode::FTheta) {
 			// not supported for now
 			count++;
@@ -469,7 +478,7 @@ __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements,
 		}
 	}
 
-	// Random position within that cellq
+	// Random position within that cell
 	uint32_t pos_idx = idx % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
 
 	uint32_t x = tcnn::morton3D_invert(pos_idx>>0);
@@ -2151,7 +2160,6 @@ void Testbed::Nerf::Training::set_camera_extrinsics(int frame_idx, const Eigen::
 	if (frame_idx < 0 || frame_idx >= dataset.n_images) {
 		return;
 	}
-
 	dataset.xforms[frame_idx].start = dataset.xforms[frame_idx].end =dataset.nerf_matrix_to_ngp(camera_to_world);
 	cam_rot_offset[frame_idx].reset_state();
 	cam_pos_offset[frame_idx].reset_state();
@@ -2243,8 +2251,8 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 	CUDA_CHECK_THROW(cudaMemcpy(transforms_gpu.data() + first, transforms.data() + first, n * sizeof(TrainingXForm), cudaMemcpyHostToDevice));
 }
 
-void Testbed::create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, int aabb_scale, bool is_hdr) {
-	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, image_resolution, aabb_scale, is_hdr);
+void Testbed::create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, float nerf_scale, int aabb_scale, bool is_hdr) {
+	m_nerf.training.dataset = ngp::create_empty_nerf_dataset(n_images, image_resolution, nerf_scale, aabb_scale, is_hdr);
 	load_nerf();
 	m_nerf.training.n_images_for_training = 0;
 	m_training_data_available = true;
@@ -2289,6 +2297,7 @@ void Testbed::load_nerf() {
 	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
 
+	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images,AdamOptimizer<Eigen::Array3f>(1e-4f));
 	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.n_images, Array3f::Zero());
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
 	m_nerf.training.cam_exposure_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
@@ -2382,7 +2391,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	float* density_grid_tmp = std::get<2>(scratch);
 	network_precision_t* mlp_out = std::get<3>(scratch);
 
-	if (m_training_step == 0 || m_nerf.training.n_images_for_training != m_nerf.training.n_images_for_training_prev) {
+	if (m_training_step ==0 || m_nerf.training.n_images_for_training != m_nerf.training.n_images_for_training_prev) {
 		m_nerf.training.n_images_for_training_prev = m_nerf.training.n_images_for_training;
 		if (m_training_step == 0) {
 			m_nerf.density_grid_ema_step = 0;

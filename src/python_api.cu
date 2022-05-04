@@ -68,7 +68,31 @@ void Testbed::Nerf::Training::set_image(int frame_idx, pybind11::array_t<float> 
 
 	dataset.set_training_image(frame_idx, (const float*)img_buf.ptr);
 }
+void Testbed::Nerf::Training::set_image_uint(int frame_idx, pybind11::array_t<uint8_t> img) {
+	if (frame_idx < 0 || frame_idx >= dataset.n_images) {
+		throw std::runtime_error{"Invalid frame index"};
+	}
 
+	py::buffer_info img_buf = img.request();
+
+	if (img_buf.ndim != 3) {
+		throw std::runtime_error{"image should be (H,W,C) where C=4"};
+	}
+
+	if (img_buf.shape[2] != 4) {
+		throw std::runtime_error{"image should be (H,W,C) where C=4"};
+	}
+
+	if (img_buf.shape[1] != dataset.image_resolution.x()) {
+		throw std::runtime_error{"image has wrong width"};
+	}
+
+	if (img_buf.shape[0] != dataset.image_resolution.y()) {
+		throw std::runtime_error{"image has wrong height"};
+	}
+
+	dataset.set_training_image_uint(frame_idx, (const uint8_t*)img_buf.ptr);
+}
 void Testbed::override_sdf_training_data(py::array_t<float> points, py::array_t<float> distances) {
 	py::buffer_info points_buf = points.request();
 	py::buffer_info distances_buf = distances.request();
@@ -320,7 +344,8 @@ PYBIND11_MODULE(pyngp, m) {
 		.def(py::init<ETestbedMode>())
 		.def(py::init<ETestbedMode, const std::string&, const std::string&>())
 		.def(py::init<ETestbedMode, const std::string&, const json&>())
-		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("image_resolution"), py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
+		.def("create_empty_nerf_dataset", &Testbed::create_empty_nerf_dataset, "Allocate memory for a nerf dataset with a given size", py::arg("n_images"), py::arg("image_resolution"), py::arg("nerf_scale"), 
+						py::arg("aabb_scale")=1, py::arg("is_hdr")=false)
 		.def("load_training_data", &Testbed::load_training_data, "Load training data from a given path.")
 		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
 		// General control
@@ -540,6 +565,11 @@ PYBIND11_MODULE(pyngp, m) {
 		)
 		.def("get_camera_extrinsics", &Testbed::Nerf::Training::get_camera_extrinsics, py::arg("frame_idx"), "return the 3x4 transformation matrix of given training frame")
 		.def("set_image", &Testbed::Nerf::Training::set_image,
+			py::arg("frame_idx"),
+			py::arg("img"),
+			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"
+		)
+		.def("set_image_uint", &Testbed::Nerf::Training::set_image_uint,
 			py::arg("frame_idx"),
 			py::arg("img"),
 			"set one of the training images. must be a floating point numpy array of (H,W,C) with 4 channels; linear color space; W and H must match image size of the rest of the dataset"

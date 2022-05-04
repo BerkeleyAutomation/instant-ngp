@@ -270,7 +270,7 @@ public:
 	void reset_accumulation();
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network();
-	void create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, int aabb_scale = 1, bool is_hdr = false);
+	void create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, float nerf_scale, int aabb_scale = 1, bool is_hdr = false);
 	void load_nerf();
 	void load_mesh();
 	void set_exposure(float exposure) { m_exposure = exposure; }
@@ -552,6 +552,7 @@ public:
 
 #ifdef NGP_PYTHON
 			void set_image(int frame_idx, pybind11::array_t<float> img);
+			void set_image_uint(int frame_idx, pybind11::array_t<uint8_t> img);
 #endif
 
 			void reset_camera_extrinsics();

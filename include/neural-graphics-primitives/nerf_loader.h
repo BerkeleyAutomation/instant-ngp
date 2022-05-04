@@ -60,7 +60,7 @@ struct NerfDataset {
 	bool has_light_dirs = false;
 
 	void set_training_image(int frame_idx, const float *pixels);
-
+	void set_training_image_uint(int frame_idx, const uint8_t *pixels);
 	Eigen::Vector3f nerf_direction_to_ngp(const Eigen::Vector3f& nerf_dir) {
 		Eigen::Vector3f result = nerf_dir;
 		if (from_mitsuba) {
@@ -127,6 +127,6 @@ struct NerfDataset {
 };
 
 NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
-NerfDataset create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, int aabb_scale = 1, bool is_hdr = false);
+NerfDataset create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, float nerf_scale, int aabb_scale = 1, bool is_hdr = false);
 
 NGP_NAMESPACE_END

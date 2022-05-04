@@ -1,4 +1,5 @@
 /.vscode
+frozen_outputs
 /.vs
 /build*
 /figures
