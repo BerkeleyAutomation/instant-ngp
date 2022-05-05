@@ -242,6 +242,26 @@ py::array_t<float> Testbed::screenshot(bool linear) const {
 #endif
 }
 
+py::array_t<float> Testbed::export_density_grid(Eigen::Vector3i res3d, BoundingBox aabb) {
+	// if an inside-out "empty" aabb given (default), use current aabb
+	if (aabb.is_empty()) {
+		aabb = m_testbed_mode == ETestbedMode::Nerf ? m_render_aabb : m_aabb;
+	}
+
+	GPUMemory<float> density = get_density_on_grid(res3d, aabb);
+	py::array_t<float> density_cpu({(int)density.size()});
+
+	CUDA_CHECK_THROW(cudaMemcpy(density_cpu.request().ptr, density.data(), density.size() * sizeof(float), cudaMemcpyDeviceToHost));
+
+	// reshape into desired xyz resolution
+	if (res3d.x()*res3d.y()*res3d.z() != density.size()){
+		throw std::domain_error("density grid export: tried to resize density grid to 3d array, didn't work...");
+	}
+	density_cpu.resize({res3d.x(), res3d.y(), res3d.z()});
+
+	return density_cpu;
+}
+
 PYBIND11_MODULE(pyngp, m) {
 	m.doc() = "Instant neural graphics primitives";
 
@@ -412,6 +432,13 @@ PYBIND11_MODULE(pyngp, m) {
 			"Compute a marching cubes mesh from the current SDF or NeRF model. "
 			"Returns a python dict with numpy arrays V (vertices), N (vertex normals), C (vertex colors), and F (triangular faces). "
 			"`thresh` is the density threshold; use 0 for SDF; 2.5 works well for NeRF. "
+			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
+		)
+		.def("export_density_grid", &Testbed::export_density_grid,
+			py::arg("resolution") = Eigen::Vector3i::Constant(256),
+			py::arg("aabb") = BoundingBox{},
+			"Retrieve density as a voxel-grid format, with no thresholding (2.5 is default for NeRF)."
+			"Returns a numpy array of size `resolution`."
 			"If the aabb parameter specifies an inside-out (\"empty\") box (default), the current render_aabb bounding box is used."
 		)
 		;
