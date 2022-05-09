@@ -25,6 +25,9 @@
 
 #include <filesystem/path.h>
 
+#include <chrono>
+#include <iostream>
+
 #ifdef NGP_GUI
 #  ifdef _WIN32
 #    include <GL/gl3w.h>
@@ -248,16 +251,29 @@ py::array_t<float> Testbed::export_density_grid(Eigen::Vector3i res3d, BoundingB
 		aabb = m_testbed_mode == ETestbedMode::Nerf ? m_render_aabb : m_aabb;
 	}
 
+	auto start = std::chrono::system_clock::now();	
 	GPUMemory<float> density = get_density_on_grid(res3d, aabb);
+	auto end = std::chrono::system_clock::now();
+	std::chrono::duration<double> diff = end - start;
+	std::cout << "Time to calculate density grid: " << diff.count() << "s \n";
+
 	py::array_t<float> density_cpu({(int)density.size()});
 
+	start = std::chrono::system_clock::now();	
 	CUDA_CHECK_THROW(cudaMemcpy(density_cpu.request().ptr, density.data(), density.size() * sizeof(float), cudaMemcpyDeviceToHost));
+	end = std::chrono::system_clock::now();
+	diff = end - start;
+	std::cout << "Time to transfer density grid to cpu: " << diff.count() << "s \n";
 
 	// reshape into desired xyz resolution
+	start = std::chrono::system_clock::now();	
 	if (res3d.x()*res3d.y()*res3d.z() != density.size()){
 		throw std::domain_error("density grid export: tried to resize density grid to 3d array, didn't work...");
 	}
 	density_cpu.resize({res3d.x(), res3d.y(), res3d.z()});
+	end = std::chrono::system_clock::now();
+	diff = end - start;
+	std::cout << "Time to resize density grid: " << diff.count() << "s \n";
 
 	return density_cpu;
 }
@@ -563,6 +579,12 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("optimize_exposure", &Testbed::Nerf::Training::optimize_exposure)
 		.def_readwrite("optimize_distortion", &Testbed::Nerf::Training::optimize_distortion)
 		.def_readwrite("optimize_focal_length", &Testbed::Nerf::Training::optimize_focal_length)
+		.def_readwrite("do_tv_loss",&Testbed::Nerf::Training::do_tv_loss)
+		.def_readwrite("n_tv_samples",&Testbed::Nerf::Training::n_tv_samples)
+		.def_readwrite("tv_radius",&Testbed::Nerf::Training::tv_radius)
+		.def_readwrite("tv_sample_threshold",&Testbed::Nerf::Training::tv_sample_threshold)
+		.def_readwrite("tv_loss_scale",&Testbed::Nerf::Training::tv_loss_scale)
+		.def_readwrite("tv_dense_connected",&Testbed::Nerf::Training::tv_dense_connected)
 		.def_readwrite("n_steps_between_cam_updates", &Testbed::Nerf::Training::n_steps_between_cam_updates)
 		.def_readwrite("sample_focal_plane_proportional_to_error", &Testbed::Nerf::Training::sample_focal_plane_proportional_to_error)
 		.def_readwrite("sample_image_proportional_to_error", &Testbed::Nerf::Training::sample_image_proportional_to_error)

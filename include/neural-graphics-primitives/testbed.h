@@ -543,6 +543,13 @@ public:
 			float density_grid_decay = 0.95f;
 			int view = 0;
 
+			//tv_loss stuff
+			int n_tv_samples = 10*128;
+			bool do_tv_loss = true;
+			float tv_radius = .003f;
+			float tv_loss_scale = 1e-4;
+			bool tv_dense_connected = true;
+			float tv_sample_threshold=.01;
 			tcnn::GPUMemory<float> sharpness_grid;
 
 			void set_camera_intrinsics(int frame_idx, float fx, float fy = 0.0f, float cx = -0.5f, float cy = -0.5f, float k1 = 0.0f, float k2 = 0.0f, float p1 = 0.0f, float p2 = 0.0f);
@@ -565,6 +572,7 @@ public:
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
 		tcnn::GPUMemory<float> density_grid_mean;
 		uint32_t density_grid_ema_step = 0;
+		uint32_t tv_step = 0;
 
 		uint32_t max_cascade = 0;
 

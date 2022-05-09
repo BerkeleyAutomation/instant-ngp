@@ -460,7 +460,10 @@ inline __device__ int mip_from_dt(float dt, const Vector3f& pos) {
 	return min(NERF_CASCADES()-1, max(exponent, mip));
 }
 
-__global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
+__global__ void generate_grid_samples_nerf_nonuniform(
+		const uint32_t n_elements, default_rng_t rng, const uint32_t step, 
+		BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, 
+		uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -491,7 +494,8 @@ __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements,
 	indices[i] = idx;
 }
 
-__global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_elements, const uint32_t* __restrict__ indices, const tcnn::network_precision_t* network_output, float* __restrict__ grid_out, ENerfActivation rgb_activation, ENerfActivation density_activation) {
+__global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_elements, const uint32_t* __restrict__ indices, 
+		const tcnn::network_precision_t* network_output, float* __restrict__ grid_out, ENerfActivation rgb_activation, ENerfActivation density_activation) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -1309,11 +1313,11 @@ __global__ void compute_loss_kernel_train_nerf(
 		background_color = envmap_value.head<3>() + background_color * (1.0f - envmap_value.w());
 	}
 
+	//get the target value for this pixel based on the training image and ray coords
 	Array3f exposure_scale = (0.6931471805599453f * exposure[img]).exp();
 	// Array3f rgbtarget = composit_and_lerp(xy, resolution, img, training_images, background_color, exposure_scale);
 	// Array3f rgbtarget = composit(xy, resolution, img, training_images, background_color, exposure_scale);
 	Array4f texsamp = read_rgba(xy, resolution, img, training_images);
-
 	Array3f rgbtarget;
 	if (train_in_linear_colors || color_space == EColorSpace::Linear) {
 		rgbtarget = exposure_scale * texsamp.head<3>() + (1.0f - texsamp.w()) * background_color;
@@ -2561,7 +2565,6 @@ void Testbed::train_nerf(uint32_t target_batch_size, uint32_t n_training_steps, 
 
 		++m_training_step;
 	}
-
 	if (envmap_gradient) {
 		m_envmap.trainer->optimizer_step(stream, LOSS_SCALE*(float)n_training_steps);
 	}
@@ -2713,6 +2716,116 @@ void Testbed::train_nerf(uint32_t target_batch_size, uint32_t n_training_steps, 
 		m_nerf.training.n_steps_since_cam_update = 0;
 	}
 }
+
+
+// dL/dout = (2*6*net_to_density(out) - 2*sum(sigma_neighbors))*network_to_density_gradient(out)
+//we drop the 2* here and simplify to 
+// dL/dout = (6*net_to_density(out) - sum(sigma_neighbors))*network_to_density_gradient(out)
+//using the activation is also bad for stability, so we use the raw network outputs
+__global__ void compute_tv_loss_6_connected(const uint32_t n_samples, const uint32_t padded_out_width,
+		ENerfActivation density_activation, const float tv_loss_scale,
+		const network_precision_t* __restrict__ center_mlp_out, //row major
+		const network_precision_t* __restrict__ neighbor_mlp_out,//row major
+		network_precision_t* __restrict__ dL_dmlp_out) {//col major
+	const uint32_t i=blockIdx.x*blockDim.x+threadIdx.x;
+	if (i>=n_samples) return;
+	float sum_neighbors_density = 0;
+	#pragma unroll
+	for(int j=0;j<6;j++) {
+		const float neighbor_density = float(neighbor_mlp_out[(i*6+j)]);
+		sum_neighbors_density += neighbor_density;
+	}
+	const float center_density = float(center_mlp_out[i]);
+	float local_dl_dout = tv_loss_scale*((6.0f*center_density - sum_neighbors_density));
+	dL_dmlp_out[i*padded_out_width] = local_dl_dout;
+	#pragma unroll
+	for(int j=1;j<padded_out_width;j++) {
+		dL_dmlp_out[i*padded_out_width+j] = 0.0;
+	}
+}
+__global__ void compute_6_connected_positions(const uint32_t n_positions, const float radius, const NerfPosition* __restrict__ center_positions,
+		NerfPosition* __restrict__ neighbor_positions){
+	//given the center_positions, compute the 6-connected neighbor positions and store them in the output
+	const uint32_t i=threadIdx.x + blockIdx.x * blockDim.x;
+	if(i>=n_positions)return;
+	const NerfPosition& center_position = center_positions[i];
+	neighbor_positions[6*i + 0].p = center_position.p + Vector3f(radius, 0.0f, 0.0f);
+	neighbor_positions[6*i + 1].p = center_position.p + Vector3f(-radius, 0.0f, 0.0f);
+	neighbor_positions[6*i + 2].p = center_position.p + Vector3f(0.0f, radius, 0.0f);
+	neighbor_positions[6*i + 3].p = center_position.p + Vector3f(0.0f, -radius, 0.0f);
+	neighbor_positions[6*i + 4].p = center_position.p + Vector3f(0.0f, 0.0f, radius);
+	neighbor_positions[6*i + 5].p = center_position.p + Vector3f(0.0f, 0.0f, -radius);
+}
+__global__ void compute_tv_loss_dense_connected(const uint32_t n_samples, const uint32_t padded_out_width,
+		ENerfActivation density_activation, const float tv_loss_scale,
+		const network_precision_t* __restrict__ center_mlp_out, //row major
+		const network_precision_t* __restrict__ neighbor_mlp_out,//row major
+		network_precision_t* __restrict__ dL_dmlp_out) {//col major
+	const uint32_t i=blockIdx.x*blockDim.x+threadIdx.x;
+	if (i>=n_samples) return;
+	//these weights account for the distance from the center pixel
+	//they are 1, 1/sqrt(2), and 1/sqrt(3) respectively
+	const float weights[3] = {1.0f, 0.70710678118f, 0.57735026919f};
+	float sum_neighbors_density = 0;
+	int idx=0;
+	for(int dx=-1;dx<=1;dx++) {
+		for(int dy=-1;dy<=1;dy++) {
+			for(int dz=-1;dz<=1;dz++) {
+				if(dx==0 && dy==0 && dz==0) continue;
+				const float neighbor_density = float(neighbor_mlp_out[(i*26+idx)]);
+				const float weight = weights[abs(dx)+abs(dy)+abs(dz)-1];
+				sum_neighbors_density += neighbor_density*weight;
+				idx++;
+			}
+		}
+	}
+	const float center_density = float(center_mlp_out[i]);
+	//the 19.xxx constant comes from pre-calculated sum of weights across all voxels
+	float local_dl_dout = tv_loss_scale*((19.104083527679997f*center_density - sum_neighbors_density));
+	dL_dmlp_out[i*padded_out_width] = local_dl_dout;
+	#pragma unroll
+	for(int j=1;j<padded_out_width;j++) {
+		dL_dmlp_out[i*padded_out_width+j] = 0.0;
+	}
+}
+__global__ void compute_dense_connected_positions(const uint32_t n_positions, const float radius, const NerfPosition* __restrict__ center_positions,
+		NerfPosition* __restrict__ neighbor_positions){
+	//given the center_positions, compute the 26-connected neighbor positions and store them in the output
+	//TODO(justin) this is slow, should refactor to have a unique thread per output
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if(i>=n_positions)return;
+	const uint32_t center_i = i/26;
+	const NerfPosition& center_position = center_positions[center_i];
+	uint32_t batch_i = i - center_i*26;//index of i within the 26-batch
+	if(batch_i>=13){//increment batch_i if it is the middle index which corresponds to dx,dy,dz = (0,0,0)
+		batch_i++;
+	}
+	const int dz = batch_i%3 - 1;
+	const int dy = (batch_i/3)%3 - 1;
+	const int dx = (batch_i/9)%3 - 1;
+	neighbor_positions[i].p = center_position.p + Vector3f(dx, dy, dz)*radius;
+	//The above code is equivalent to the below when called with len(center_positions) as n_positions
+	// const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	// if(i>=n_positions)return;
+	// const NerfPosition& center_position = center_positions[i];
+	// const Vector3f ex(radius, 0.0f, 0.0f);
+	// const Vector3f ey(0.0f, radius, 0.0f);
+	// const Vector3f ez(0.0f, 0.0f, radius);
+	// int idx=0;
+	// for(int dx=-1;dx<=1;dx++) {
+	// 	const Vector3f x = center_position.p+ex*dx;
+	// 	for(int dy=-1;dy<=1;dy++) {
+	// 		const Vector3f xy = x+ey*dy;
+	// 		for(int dz=-1;dz<=1;dz++) {
+	// 			if(dx==0 && dy==0 && dz==0) continue;
+	// 			const Vector3f xyz = xy + ez*dz;
+	// 			neighbor_positions[26*i + idx].p = xyz;
+	// 			idx++;
+	// 		}
+	// 	}
+	// }
+}
+
 
 void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_batch, uint32_t* counter, uint32_t* compacted_counter, float* loss, cudaStream_t stream) {
 	const uint32_t padded_output_width = m_network->padded_output_width();
@@ -2907,6 +3020,106 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, train_camera);
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, train_camera ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
+	if(m_nerf.training.do_tv_loss){
+		//compute TV loss here (laplacian)
+		//params needed: number of grid samples for TV loss, radius parameter controlling distance of neighbor samples
+		//1. compute grid locations to do TV loss on using generate_grid_samples_nerf_nonuniform
+		const uint32_t tv_out_width = m_nerf_network->padded_density_output_width();
+		const uint32_t n_neighbors = m_nerf.training.tv_dense_connected ? 26 : 6;
+		GPUMemoryArena::Allocation tv_alloc;
+		auto tv_scratch = allocate_workspace_and_distribute<
+			NerfPosition,       // positions at which the NN will be queried for centerpoint density evaluation
+			NerfPosition,	   //positions to query the NN for density evaluation of neighbors
+			uint32_t,           // indices of corresponding density grid cells
+			network_precision_t, // output of the MLP for center densities
+			network_precision_t, //dl_dmlpout
+			network_precision_t //output of the MLP for neighbor densities
+		>(stream, &tv_alloc, m_nerf.training.n_tv_samples,
+							m_nerf.training.n_tv_samples * n_neighbors, 
+							m_nerf.training.n_tv_samples,
+							m_nerf.training.n_tv_samples * tv_out_width,
+							m_nerf.training.n_tv_samples * tv_out_width,
+							m_nerf.training.n_tv_samples * tv_out_width * n_neighbors);//times 6 for the 6-connected neighbors
+
+		NerfPosition* center_grid_positions = std::get<0>(tv_scratch);
+		NerfPosition* neighbor_grid_positions = std::get<1>(tv_scratch);
+		uint32_t* center_grid_indices = std::get<2>(tv_scratch);
+		network_precision_t* tv_center_mlp_out = std::get<3>(tv_scratch);
+		network_precision_t* tv_dL_dmlp_out = std::get<4>(tv_scratch);
+		network_precision_t* tv_neighbor_mlp_out = std::get<5>(tv_scratch);
+
+		//TODO(justin)limits samples to the middle to not waste them
+		//note: these grid samples are in the range [0,1], representing the position inside the aabb
+		linear_kernel(generate_grid_samples_nerf_nonuniform,0,stream,
+				m_nerf.training.n_tv_samples,
+				m_rng,
+				m_nerf.tv_step,
+				m_aabb, 
+				m_nerf.density_grid.data(),
+				center_grid_positions,
+				center_grid_indices,
+				m_nerf.max_cascade+1,
+				m_nerf.training.tv_sample_threshold);
+		m_nerf.tv_step++;
+		m_rng.advance();
+		// 2. compute the density values for the center locations
+		// this cast is magical: a NerfPosition is just an eigen vector3, which is equiv to float[3] 
+		// so casting to floats means the memory layout in a col is just 3 floats: xyz
+		GPUMatrix<float> center_position_matrix((float*)center_grid_positions, sizeof(NerfPosition)/sizeof(float), m_nerf.training.n_tv_samples);
+		// this matrix is the density of the "center" points, that are surrounded by neighbors
+		GPUMatrix<network_precision_t, RM> center_density_matrix(tv_center_mlp_out, tv_out_width, m_nerf.training.n_tv_samples);
+		// 3. compute the density values of neighbors
+		//TODO(justin) convert the radius from physical coords to aabb size
+		GPUMatrix<float> neighbor_position_matrix((float*)neighbor_grid_positions, sizeof(NerfPosition)/sizeof(float), m_nerf.training.n_tv_samples*n_neighbors);
+		GPUMatrix<network_precision_t, RM> neighbor_density_matrix(tv_neighbor_mlp_out, tv_out_width, m_nerf.training.n_tv_samples*n_neighbors);
+		if(m_nerf.training.tv_dense_connected){
+			linear_kernel(compute_dense_connected_positions,0,stream,
+					m_nerf.training.n_tv_samples*n_neighbors,
+					m_nerf.training.tv_radius,
+					center_grid_positions,
+					neighbor_grid_positions);
+		}else{
+			linear_kernel(compute_6_connected_positions,0,stream,
+					m_nerf.training.n_tv_samples,
+					m_nerf.training.tv_radius,
+					center_grid_positions,
+					neighbor_grid_positions);
+		}
+		m_nerf_network->density(stream,neighbor_position_matrix,neighbor_density_matrix,false);
+		m_nerf_network->density(stream,center_position_matrix,center_density_matrix,false);
+		// 4. run a kernel which takes those locations and computes the deviation (loss) with neighboring grid locations, as well as dL/dout
+		GPUMatrix<network_precision_t> tv_gradient_matrix(tv_dL_dmlp_out, tv_out_width, m_nerf.training.n_tv_samples);
+		if(m_nerf.training.tv_dense_connected){
+			linear_kernel(compute_tv_loss_dense_connected, 0, stream,
+				m_nerf.training.n_tv_samples,//length of samples
+				tv_out_width,
+				m_nerf.density_activation,
+				m_nerf.training.tv_loss_scale/m_nerf.training.n_tv_samples,
+				tv_center_mlp_out,
+				tv_neighbor_mlp_out,
+				tv_dL_dmlp_out
+			);
+		}else{
+			linear_kernel(compute_tv_loss_6_connected, 0, stream,
+				m_nerf.training.n_tv_samples,//length of samples
+				tv_out_width,
+				m_nerf.density_activation,
+				m_nerf.training.tv_loss_scale/m_nerf.training.n_tv_samples,
+				tv_center_mlp_out,
+				tv_neighbor_mlp_out,
+				tv_dL_dmlp_out
+			);
+		}
+		// 7. run m_nerf_network.density_backward with adding gradients using the dl_dout from 2.
+		{
+			auto ctx=m_nerf_network->density_forward(stream, center_position_matrix, &center_density_matrix);
+			//using Accumulate screws up the network somehow, but if you use Ignore it's ok 
+			//(probably because of a mishandling of network output padding.....)
+			m_nerf_network->density_backward(stream, *ctx, center_position_matrix, center_density_matrix, 
+					tv_gradient_matrix, nullptr,false,EGradientMode::Accumulate);
+		}
+		// throw std::runtime_error("stop");
+	}
 
 	if (train_camera) {
 		// Compute camera gradients
@@ -2972,7 +3185,8 @@ void Testbed::optimise_mesh_step(uint32_t n_steps) {
 	GPUMatrix<network_precision_t, RM> density_matrix(mlp_out.data(), padded_output_width, n_verts);
 
 	for (uint32_t i = 0; i < n_steps; ++i) {
-		linear_kernel(generate_nerf_network_inputs_from_positions, 0, m_inference_stream, n_verts, m_aabb, m_mesh.verts.data(), PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride), m_nerf.light_dir.normalized());
+		linear_kernel(generate_nerf_network_inputs_from_positions, 0, m_inference_stream, n_verts, m_aabb, m_mesh.verts.data(), 
+			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride), m_nerf.light_dir.normalized());
 
 		// For each optimizer step, we need the density at the given pos...
 		m_nerf_network->density(m_inference_stream, positions_matrix, density_matrix);
