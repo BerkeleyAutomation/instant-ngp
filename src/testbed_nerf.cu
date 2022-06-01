@@ -572,8 +572,8 @@ __global__ void grid_to_bitfield(const uint32_t n_elements,
 
 	uint8_t bits = 0;
 
-	float thresh = std::min(NERF_MIN_OPTICAL_THICKNESS(), *mean_density_ptr);
-
+	// float thresh = std::min(NERF_MIN_OPTICAL_THICKNESS(), *mean_density_ptr);
+	float thresh = std::min(0.0f, *mean_density_ptr);//justin changed this to 0 to get no density occupancy grid
 	#pragma unroll
 	for (uint8_t j = 0; j < 8; ++j) {
 		bits |= grid[i*8+j] > thresh ? ((uint8_t)1 << j) : 0;
@@ -800,6 +800,10 @@ __global__ void composite_kernel_nerf(
 		float T = 1.f - local_rgba.w();
 		float dt = unwarp_dt(input->dt);
 		float alpha = 1.f - __expf(-network_to_density(float(local_network_output[3]), density_activation) * dt /* * fog_scale*/);
+		//justin changed this: added this line to ignore pixels which have less than min_optical_thickness to simulate the existence of an occupancy grid even if the grid is disabled
+		if(alpha<NERF_MIN_OPTICAL_THICKNESS()){
+			continue;
+		}
 		if (show_accel>=0)
 		alpha=1.f;
 		float weight = alpha * T;
@@ -2413,7 +2417,6 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
 		}
 	}
-
 	uint32_t n_steps = 1;
 	for (uint32_t i = 0; i < n_steps; ++i) {
 		CUDA_CHECK_THROW(cudaMemsetAsync(density_grid_tmp, 0, sizeof(float)*n_elements, stream));
@@ -2453,7 +2456,6 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 
 		++m_nerf.density_grid_ema_step;
 	}
-
 	update_density_grid_mean_and_bitfield(stream);
 }
 

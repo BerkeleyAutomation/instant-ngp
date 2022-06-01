@@ -1626,6 +1626,12 @@ Testbed::NetworkDims Testbed::network_dims() const {
 		default: throw std::runtime_error{"Invalid mode."};
 	}
 }
+void Testbed::reset_optimizer(){
+	json config = m_network_config;
+	json& optimizer_config = config["optimizer"];
+	m_optimizer.reset(create_optimizer<precision_t>(optimizer_config));
+}
+
 
 void Testbed::reset_network() {
 	m_sdf.iou_decay = 0;
@@ -1933,7 +1939,6 @@ void Testbed::train(uint32_t n_training_steps, uint32_t batch_size) {
 		ScopeGuard timing_guard{[&]() {
 			m_training_milliseconds = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now()-start).count();
 		}};
-
 		switch (m_testbed_mode) {
 			case ETestbedMode::Nerf:   train_nerf(batch_size, n_training_steps, m_training_stream);   break;
 			case ETestbedMode::Sdf:    train_sdf(batch_size, n_training_steps, m_training_stream);    break;

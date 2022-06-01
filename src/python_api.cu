@@ -415,6 +415,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
 		.def("train", &Testbed::train, "Perform a specified number of training steps.")
 		.def("reset", &Testbed::reset_network, "Reset training.")
+		.def("reset_optimizer",&Testbed::reset_optimizer)
 		.def("reset_accumulation", &Testbed::reset_accumulation, "Reset rendering accumulation.")
 		.def("reload_network_from_file", &Testbed::reload_network_from_file, py::arg("path")="", "Reload the network from a config file.")
 		.def("reload_network_from_json", &Testbed::reload_network_from_json, "Reload the network from a json object.")

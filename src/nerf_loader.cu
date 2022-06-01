@@ -736,10 +736,11 @@ void NerfDataset::set_training_image_uint(int frame_idx, const uint8_t* pixels){
 	linear_kernel(from_rgba32<__half>, 0, nullptr, n_pixels,
 			(uint8_t*)images_data_gpu_tmp.data(), images_data.data() + img_size * (size_t)frame_idx,
 			false, false, 0);
-	const dim3 threads = { 16, 8, 1 };
-	const dim3 blocks = { div_round_up((uint32_t)sharpness_resolution.x(), threads.x), div_round_up((uint32_t)sharpness_resolution.y(), threads.y), div_round_up((uint32_t)n_images, threads.z) };
-	sharpness_data.enlarge(sharpness_resolution.x() * sharpness_resolution.y());
-	compute_sharpness<<<blocks, threads, 0, nullptr>>>(sharpness_resolution, image_resolution, 1, images_data.data() + img_size * (size_t)frame_idx, sharpness_data.data() + sharpness_resolution.x() * sharpness_resolution.y() * (size_t)frame_idx);
+	//we don't use sharpness
+	// const dim3 threads = { 16, 8, 1 };
+	// const dim3 blocks = { div_round_up((uint32_t)sharpness_resolution.x(), threads.x), div_round_up((uint32_t)sharpness_resolution.y(), threads.y), div_round_up((uint32_t)n_images, threads.z) };
+	// sharpness_data.enlarge(sharpness_resolution.x() * sharpness_resolution.y());
+	// compute_sharpness<<<blocks, threads, 0, nullptr>>>(sharpness_resolution, image_resolution, 1, images_data.data() + img_size * (size_t)frame_idx, sharpness_data.data() + sharpness_resolution.x() * sharpness_resolution.y() * (size_t)frame_idx);
 }
 
 NGP_NAMESPACE_END

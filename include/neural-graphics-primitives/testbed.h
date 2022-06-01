@@ -270,6 +270,7 @@ public:
 	void reset_accumulation();
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network();
+	void reset_optimizer();
 	void create_empty_nerf_dataset(size_t n_images, Eigen::Vector2i image_resolution, float nerf_scale, int aabb_scale = 1, bool is_hdr = false);
 	void load_nerf();
 	void load_mesh();
